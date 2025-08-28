@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: s1000d-qa-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false  # Set this in Render dashboard
+      - key: PYTHONPATH
+        value: /app
+      - key: PORT
+        value: 8000
+    healthCheckPath: /health
+    buildCommand: docker build -t s1000d-qa .
+    startCommand: python -m uvicorn backend.app:app --host 0.0.0.0 --port $PORT
+
+  - type: static_site
+    name: s1000d-qa-frontend
+    runtime: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/build
+    pullRequestPreviewsEnabled: true
+    envVars:
+      - key: REACT_APP_API_URL
+        fromService:
+          type: web
+          name: s1000d-qa-api
+          property: host
