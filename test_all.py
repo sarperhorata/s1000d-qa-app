@@ -46,30 +46,22 @@ def run_frontend_tests():
     print("=" * 50)
 
     try:
-        # Change to frontend directory
-        os.chdir("frontend")
-
-        # Run frontend tests
-        result = subprocess.run([sys.executable, "test_frontend.py"],
-                              capture_output=True, text=True, timeout=300)
+        # Run frontend tests from frontend directory
+        result = subprocess.run([sys.executable, "frontend/test_frontend.py"],
+                              capture_output=True, text=True, timeout=300, cwd=".")
 
         print(result.stdout)
 
         if result.stderr:
             print("STDERR:", result.stderr)
 
-        # Go back to project root
-        os.chdir("..")
-
         return result.returncode == 0
 
     except subprocess.TimeoutExpired:
         print("❌ Frontend tests timed out")
-        os.chdir("..")
         return False
     except Exception as e:
         print(f"❌ Error running frontend tests: {e}")
-        os.chdir("..")
         return False
 
 def check_project_structure():
