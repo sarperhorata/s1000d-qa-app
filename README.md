@@ -38,6 +38,32 @@ S1000D dokümantasyonunda spesifik bilgilere hızlı ve doğru şekilde ulaşmak
 - npm
 - Ollama (yerel LLM için)
 
+### Environment Variables (Güvenlik için gerekli!)
+
+**Önemli:** Güvenlik nedeniyle API anahtarları artık environment variables ile yönetiliyor.
+
+1. `.env` dosyasını projenin ana dizininde oluşturun:
+```bash
+cp .env.template .env  # Eğer template varsa
+```
+
+2. `.env` dosyasına gerçek değerlerinizi girin:
+```bash
+# Pinecone Configuration (Required)
+PINECONE_API_KEY=your_actual_pinecone_api_key
+PINECONE_ENVIRONMENT=gcp-starter
+PINECONE_INDEX_URL=https://your-actual-index-url.pinecone.io
+
+# OpenAI Configuration (Optional)
+OPENAI_API_KEY=your_actual_openai_api_key
+
+# Application Configuration
+DEBUG=false
+CORS_ORIGINS=http://localhost:3000,http://localhost:3004,http://127.0.0.1:3000
+```
+
+**Uyarı:** `.env` dosyası asla Git'e yüklenmemelidir!
+
 ### Yerel Kurulum
 
 #### Backend Kurulumu

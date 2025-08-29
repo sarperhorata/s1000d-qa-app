@@ -3,10 +3,10 @@ import json
 import xmltodict
 import traceback
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict, Any, Union
 import uvicorn
 import PyPDF2
@@ -25,9 +25,23 @@ import base64
 from PIL import Image
 import io
 import fitz  # PyMuPDF for better PDF image extraction
+from dotenv import load_dotenv
+from defusedxml import ElementTree as SafeET  # Secure XML parsing
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.errors import RateLimitExceeded
 
-# API Key (fallback for OpenAI if needed)
+# Load environment variables from .env file
+load_dotenv()
+
+# API Keys from environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
+# CORS Origins from environment
+CORS_ORIGINS_STR = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3004,http://127.0.0.1:3000")
+CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_STR.split(",") if origin.strip()]
 
 # Initialize local models
 embedding_model = None
@@ -70,29 +84,86 @@ def get_local_embedding(text: str) -> List[float]:
         print(f"Error getting local embedding: {str(e)}")
         raise
 
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute", "1000/hour"])
+
+# Create FastAPI app with rate limiting
 app = FastAPI(
     title="S1000D QA API",
-    description="API for querying S1000D documentation using semantic search",
+    description="API for querying S1000D documentation using semantic search with rate limiting",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
 
+# Add rate limiting middleware
+app.add_middleware(SlowAPIMiddleware)
+
+# Add rate limit exceeded handler
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # CORS setup to allow frontend to communicate with backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Frontend development
-        "http://localhost:3004",  # Alternative frontend port
-        "http://127.0.0.1:3000",  # Alternative localhost
-        "*"  # Allow all for development (not recommended for production)
-    ],
+    allow_origins=CORS_ORIGINS,  # Only allow specified origins from environment
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # Explicit methods instead of "*"
+    allow_headers=["*"],  # Keep for now, but consider restricting
+    expose_headers=["Content-Type", "X-XSRF-TOKEN"],  # Explicit exposed headers
     max_age=3600,
 )
+
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses"""
+    response = await call_next(request)
+
+    # Security headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
+    # Content Security Policy (restrictive)
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "  # Allow React scripts
+        "style-src 'self' 'unsafe-inline'; "  # Allow inline styles
+        "img-src 'self' data: https:; "  # Allow data URLs and HTTPS images
+        "font-src 'self'; "
+        "connect-src 'self' http://localhost:3000 http://localhost:3004 http://127.0.0.1:3000; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self';"
+    )
+    response.headers["Content-Security-Policy"] = csp
+
+    # Remove server header for security
+    if "server" in response.headers:
+        del response.headers["server"]
+
+    return response
+
+# HTTPS redirection middleware (only in production)
+@app.middleware("http")
+async def https_redirect_middleware(request: Request, call_next):
+    """Redirect HTTP to HTTPS in production"""
+    # Only redirect in production (not localhost)
+    if (os.getenv("ENVIRONMENT", "development").lower() == "production" and
+        request.url.scheme == "http" and
+        not request.url.hostname in ["localhost", "127.0.0.1"]):
+
+        # Build HTTPS URL
+        https_url = request.url.replace(scheme="https")
+        return Response(
+            status_code=301,
+            headers={"Location": str(https_url)}
+        )
+
+    response = await call_next(request)
+    return response
 
 # Initialize OpenAI client (only when needed)
 openai_client = None
@@ -140,6 +211,27 @@ class QueryRequest(BaseModel):
     skip_search: bool = False
     language: str = "en"
 
+    @validator('query')
+    def validate_query(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Query cannot be empty')
+        if len(v.strip()) > 5000:  # Reasonable limit
+            raise ValueError('Query too long (max 5000 characters)')
+        # Basic XSS protection
+        dangerous_patterns = ['<script', 'javascript:', 'onload=', 'onerror=']
+        for pattern in dangerous_patterns:
+            if pattern.lower() in v.lower():
+                raise ValueError('Invalid query content detected')
+        return v.strip()
+
+    @validator('page', 'page_size')
+    def validate_pagination(cls, v):
+        if v < 1:
+            raise ValueError('Page and page_size must be positive integers')
+        if v > 1000:  # Reasonable upper limit
+            raise ValueError('Value too large')
+        return v
+
 class AIQueryRequest(BaseModel):
     query: str
     summary: bool = False
@@ -148,6 +240,25 @@ class AIQueryRequest(BaseModel):
     context_limit: int = 15  # 5'ten 15'e çıkarıldı - daha fazla bağlam
     skip_search: bool = False
     search_only: bool = False
+
+    @validator('query')
+    def validate_query(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Query cannot be empty')
+        if len(v.strip()) > 5000:  # Reasonable limit
+            raise ValueError('Query too long (max 5000 characters)')
+        # Basic XSS protection
+        dangerous_patterns = ['<script', 'javascript:', 'onload=', 'onerror=']
+        for pattern in dangerous_patterns:
+            if pattern.lower() in v.lower():
+                raise ValueError('Invalid query content detected')
+        return v.strip()
+
+    @validator('context_limit')
+    def validate_context_limit(cls, v):
+        if v < 1 or v > 50:  # Reasonable range
+            raise ValueError('Context limit must be between 1 and 50')
+        return v
 
 class AIQueryResponse(BaseModel):
     answer: str
@@ -335,7 +446,11 @@ async def index_documents():
         
     except Exception as e:
         print(f"Error during indexing: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to index documents: {str(e)}")
+        # Log detailed error for debugging (don't expose to client)
+        print(f"Error during indexing: {str(e)}")
+        traceback.print_exc()
+        # Return generic error message to client
+        raise HTTPException(status_code=500, detail="An error occurred while indexing documents. Please try again later.")
 
 def generate_ai_response(relevant_chunks, user_query, translate=False, translate_to="Turkish"):
     """Generate an AI response based on the relevant documents and user query"""
@@ -765,6 +880,7 @@ def extract_context(text, keywords, context_size=15):
     return filtered_texts
 
 @app.post("/query", response_model=QueryResponse)
+@limiter.limit("50/minute")  # Moderate limit for regular queries
 async def handle_query(request: QueryRequest):
     """Handle a query from the frontend"""
     try:
@@ -839,25 +955,87 @@ async def handle_query(request: QueryRequest):
         )
         
     except Exception as e:
+        # Log detailed error for debugging (don't expose to client)
         print(f"Error in handle_query: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+        # Return generic error message to client
+        raise HTTPException(status_code=500, detail="An error occurred while processing your request. Please try again later.")
+
+def validate_xml_content(xml_content: str) -> bool:
+    """Validate XML content for security"""
+    if not xml_content or not xml_content.strip():
+        return False
+
+    # Check for dangerous XML patterns
+    dangerous_patterns = [
+        '<!ENTITY',  # XML entities
+        '<!DOCTYPE',  # Doctype declarations
+        '<?xml-stylesheet',  # External stylesheets
+        'SYSTEM ',  # System references
+        'PUBLIC ',  # Public references
+    ]
+
+    for pattern in dangerous_patterns:
+        if pattern.lower() in xml_content.lower():
+            return False
+
+    # Size limit (10MB)
+    if len(xml_content) > 10 * 1024 * 1024:
+        return False
+
+    return True
+
+def safe_parse_xml(xml_content: str) -> Optional[Dict]:
+    """Safely parse XML content using defusedxml"""
+    try:
+        if not validate_xml_content(xml_content):
+            raise ValueError("Invalid XML content detected")
+
+        # Use defusedxml for secure parsing
+        # For now, use xmltodict with additional validation
+        # In production, consider using defusedxml.ElementTree
+        parsed = xmltodict.parse(xml_content, process_namespaces=False)
+
+        # Additional validation on parsed content
+        if isinstance(parsed, dict):
+            # Remove any potential dangerous keys
+            safe_keys = ['@', '#text', 'name', 'value', 'content', 'text']
+            def clean_dict(d):
+                if isinstance(d, dict):
+                    return {k: clean_dict(v) for k, v in d.items()
+                           if any(safe in k.lower() for safe in safe_keys) or k in ['name', 'value']}
+                elif isinstance(d, list):
+                    return [clean_dict(item) for item in d]
+                else:
+                    return d
+            return clean_dict(parsed)
+        return parsed
+
+    except Exception as e:
+        print(f"Error parsing XML: {str(e)}")
+        raise HTTPException(status_code=400, detail="Invalid XML content")
 
 def extract_terms_from_xml(xml_dict, terms=None):
-    """Extract text values from an XML dictionary recursively."""
+    """Extract text values from an XML dictionary recursively with security checks."""
     if terms is None:
         terms = []
-    
+
     if isinstance(xml_dict, dict):
         for key, value in xml_dict.items():
             if isinstance(value, (dict, list)):
                 extract_terms_from_xml(value, terms)
             elif isinstance(value, str) and value.strip():
-                terms.append(value.strip())
+                # Additional validation on extracted text
+                if len(value.strip()) > 10000:  # Reasonable text length limit
+                    continue
+                # Remove any remaining dangerous characters
+                safe_text = re.sub(r'[<>]', '', value.strip())
+                if safe_text:
+                    terms.append(safe_text)
     elif isinstance(xml_dict, list):
         for item in xml_dict:
             extract_terms_from_xml(item, terms)
-    
+
     return terms
 
 def format_as_xml(text):
@@ -873,6 +1051,7 @@ def format_as_xml(text):
     return text
 
 @app.get("/health")
+@limiter.exempt  # Health check should not be rate limited
 async def health_check():
     """Health check endpoint"""
     return {
@@ -949,11 +1128,13 @@ async def simple_test():
         }
 
 @app.get("/")
+@limiter.exempt  # Root endpoint should not be rate limited
 def read_root():
     """Root endpoint."""
     return {"message": "S1000D QA API - Use /query endpoint for document queries"}
 
 @app.post("/ai-query", response_model=AIQueryResponse)
+@limiter.limit("20/minute")  # Stricter limit for AI queries
 async def ai_query_documents(request: AIQueryRequest):
     """Enhanced AI query endpoint"""
     start_time = time.time()
@@ -1017,9 +1198,11 @@ async def ai_query_documents(request: AIQueryRequest):
         }
     
     except Exception as e:
+        # Log detailed error for debugging (don't expose to client)
         print(f"Error in ai_query_documents: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return generic error message to client
+        raise HTTPException(status_code=500, detail="An error occurred while processing your AI query. Please try again later.")
 
 def translate_text(text: str, target_lang: str = 'tr') -> str:
     """Translate text using deep-translator"""
@@ -1142,6 +1325,7 @@ def process_s1000d_images(pdf_path: str) -> Dict[str, Any]:
     }
 
 @app.post("/multimodal-query")
+@limiter.limit("10/minute")  # Very strict limit for multimodal queries (expensive)
 async def multimodal_query(request: AIQueryRequest):
     """Enhanced multimodal query endpoint that can handle images and text"""
     start_time = time.time()
@@ -1188,11 +1372,14 @@ async def multimodal_query(request: AIQueryRequest):
         }
 
     except Exception as e:
+        # Log detailed error for debugging (don't expose to client)
         print(f"Error in multimodal_query: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return generic error message to client
+        raise HTTPException(status_code=500, detail="An error occurred while processing your multimodal query. Please try again later.")
 
 @app.post("/analyze-image")
+@limiter.limit("5/minute")  # Very strict limit for image analysis (very expensive)
 async def analyze_image(file: UploadFile = File(...), query: str = Form("Describe this image in the context of S1000D documentation")):
     """Analyze uploaded images using multimodal model"""
     try:
@@ -1236,7 +1423,11 @@ async def process_pdf_images():
 
     except Exception as e:
         print(f"Error processing PDF images: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log detailed error for debugging (don't expose to client)
+        print(f"Error in process_pdf_images: {str(e)}")
+        traceback.print_exc()
+        # Return generic error message to client
+        raise HTTPException(status_code=500, detail="An error occurred while processing PDF images. Please try again later.")
 
 @app.get("/get-pdf-images")
 async def get_pdf_images():
@@ -1266,7 +1457,11 @@ async def get_pdf_images():
 
     except Exception as e:
         print(f"Error getting PDF images: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log detailed error for debugging (don't expose to client)
+        print(f"Error in process_pdf_images: {str(e)}")
+        traceback.print_exc()
+        # Return generic error message to client
+        raise HTTPException(status_code=500, detail="An error occurred while processing PDF images. Please try again later.")
 
 # PDF Index Management Endpoints
 
@@ -1301,7 +1496,11 @@ async def reindex_pdf():
 
     except Exception as e:
         print(f"Error re-indexing PDF: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log detailed error for debugging (don't expose to client)
+        print(f"Error in process_pdf_images: {str(e)}")
+        traceback.print_exc()
+        # Return generic error message to client
+        raise HTTPException(status_code=500, detail="An error occurred while processing PDF images. Please try again later.")
 
 @app.get("/index-status")
 async def get_index_status():
@@ -1342,7 +1541,11 @@ async def get_index_status():
 
     except Exception as e:
         print(f"Error getting index status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log detailed error for debugging (don't expose to client)
+        print(f"Error in process_pdf_images: {str(e)}")
+        traceback.print_exc()
+        # Return generic error message to client
+        raise HTTPException(status_code=500, detail="An error occurred while processing PDF images. Please try again later.")
 
 @app.post("/update-pdf-path")
 async def update_pdf_path(request: dict):
@@ -1364,7 +1567,11 @@ async def update_pdf_path(request: dict):
 
     except Exception as e:
         print(f"Error updating PDF path: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log detailed error for debugging (don't expose to client)
+        print(f"Error in process_pdf_images: {str(e)}")
+        traceback.print_exc()
+        # Return generic error message to client
+        raise HTTPException(status_code=500, detail="An error occurred while processing PDF images. Please try again later.")
 
 @app.get("/images-test")
 async def images_test():

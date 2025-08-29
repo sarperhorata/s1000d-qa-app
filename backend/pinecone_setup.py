@@ -7,15 +7,26 @@ import os
 from typing import List, Dict, Any
 import PyPDF2
 import re
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Pinecone configuration
-PINECONE_API_KEY = "pcsk_4kXPC7_R9tgkfgiqXmjDw8Usd6K2WVDkeJHfEZpY5TnuLk4G5WNyfv22PALd12QVtzqNX2"
-PINECONE_ENVIRONMENT = "gcp-starter"  # Free tier environment
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "gcp-starter")
 INDEX_NAME = "s1000d-docs"
-PINECONE_INDEX_URL = "https://s1000dv2-p9v7xql.svc.aped-4627-b74a.pinecone.io"
+PINECONE_INDEX_URL = os.getenv("PINECONE_INDEX_URL", "")
 
 # OpenAI configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+# Validate required environment variables
+if not PINECONE_API_KEY:
+    raise ValueError("PINECONE_API_KEY environment variable is required. Please set it in your .env file.")
+
+if not PINECONE_INDEX_URL:
+    raise ValueError("PINECONE_INDEX_URL environment variable is required. Please set it in your .env file.")
 
 # Initialize OpenAI client
 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
