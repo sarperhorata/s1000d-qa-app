@@ -143,3 +143,6 @@ Thumbs.db
 
 # Render deployment (keep render.yaml)
 # render.yaml
+# ChromaDB persistent storage
+backend/chroma_data/
+chroma_data/
