@@ -151,3 +151,4 @@ echo "  View logs: az containerapp logs show --name $AZURE_CONTAINER_APP_NAME --
 echo "  View app: az containerapp show --name $AZURE_CONTAINER_APP_NAME --resource-group $AZURE_RESOURCE_GROUP"
 echo "  Delete app: az containerapp delete --name $AZURE_CONTAINER_APP_NAME --resource-group $AZURE_RESOURCE_GROUP"
 
+

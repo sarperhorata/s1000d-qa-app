@@ -1,0 +1,53 @@
+version: '3.8'
+
+# Simplified Docker Compose for Batuhan
+# Easy to understand and modify
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.simple
+    container_name: s1000d-simple-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount S1000D data directory (read-only)
+      - /Users/sarperhorata/s1000d QA/S1000D Issue 6:/data:ro
+    environment:
+      - XML_DIR=/data/Bike Data Set for Release number 6 R2
+      - PDF_PATH=/data/Specification/S1000D Issue 6.PDF
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - s1000d-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: s1000d-simple-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - s1000d-net
+
+networks:
+  s1000d-net:
+    driver: bridge
+
+# Usage:
+# 1. Start: docker-compose -f docker-compose.simple.yml up
+# 2. Stop: docker-compose -f docker-compose.simple.yml down
+# 3. Rebuild: docker-compose -f docker-compose.simple.yml up --build
+

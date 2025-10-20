@@ -12,6 +12,8 @@ interface Answer {
   is_xml: boolean;
   formatted_xml?: string;
   translated_text?: string;
+  content_type?: string;  // NEW: Content type (text, heading, table, diagram, list)
+  importance?: number;    // NEW: Importance score (1-5)
 }
 
 interface SummaryResponse {
@@ -72,6 +74,11 @@ function App() {
   const [searchTime, setSearchTime] = useState(0);
   const [backendStatus, setBackendStatus] = useState<'unknown' | 'ok' | 'error'>('unknown');
 
+  // NEW: Advanced filtering
+  const [filterChapter, setFilterChapter] = useState<string>('');
+  const [filterContentType, setFilterContentType] = useState<string>('');
+  const [minImportance, setMinImportance] = useState<number>(1);
+
   // API base URL
   const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -96,6 +103,11 @@ function App() {
     e.preventDefault();
     if (!query.trim()) return;
 
+    // Reset filters on new search
+    setFilterChapter('');
+    setFilterContentType('');
+    setMinImportance(1);
+
     setIsLoading(true);
     setError(null);
     setResults(null);
@@ -111,7 +123,10 @@ function App() {
         translate: false,
         language: 'en',
         summary_mode: false,
-        skip_search: false
+        skip_search: false,
+        filter_chapter: filterChapter || undefined,
+        filter_content_type: filterContentType || undefined,
+        min_importance: minImportance > 1 ? minImportance : undefined
       }, {
         headers: {
           'Content-Type': 'application/json',
@@ -177,20 +192,23 @@ function App() {
   // Handle page change
   const handlePageChange = (page: number) => {
     setCurrentPage(page);
-    
+
     // Page değiştiğinde yeni sorgu yap
     const fetchPage = async () => {
       setIsLoading(true);
       setError(null);
-      
+
       try {
         const response = await axios.post<QueryResponse>(`${API_BASE_URL}/query`, {
           query,
           translate,
           page,
-          page_size: 5,
+          page_size: 10,
           summary_mode: summaryMode,
-          quick_mode: quickMode
+          quick_mode: quickMode,
+          filter_chapter: filterChapter || undefined,
+          filter_content_type: filterContentType || undefined,
+          min_importance: minImportance > 1 ? minImportance : undefined
         }, {
           headers: {
             'Content-Type': 'application/json',
@@ -355,6 +373,70 @@ function App() {
                   </Form.Text>
                 </Form.Group>
 
+                {/* NEW: Advanced Filtering Section */}
+                <Form.Group className="mb-3">
+                  <Form.Label className="text-primary">
+                    <i className="bi bi-funnel me-2"></i>
+                    Gelişmiş Filtreleme (İsteğe Bağlı)
+                  </Form.Label>
+                  <Row>
+                    <Col md={4}>
+                      <Form.Control
+                        type="text"
+                        placeholder="Bölüm (örn: 2.5, 3.1)"
+                        value={filterChapter}
+                        onChange={(e) => setFilterChapter(e.target.value)}
+                        disabled={isLoading}
+                      />
+                    </Col>
+                    <Col md={4}>
+                      <Form.Select
+                        value={filterContentType}
+                        onChange={(e) => setFilterContentType(e.target.value)}
+                        disabled={isLoading}
+                      >
+                        <option value="">İçerik Tipi (Hepsi)</option>
+                        <option value="text">Metin</option>
+                        <option value="heading">Başlık</option>
+                        <option value="table">Tablo</option>
+                        <option value="diagram">Diyagram</option>
+                        <option value="list">Liste</option>
+                      </Form.Select>
+                    </Col>
+                    <Col md={4}>
+                      <Form.Select
+                        value={minImportance}
+                        onChange={(e) => setMinImportance(Number(e.target.value))}
+                        disabled={isLoading}
+                      >
+                        <option value={1}>Önem Derecesi (1+)</option>
+                        <option value={2}>Önem Derecesi (2+)</option>
+                        <option value={3}>Önem Derecesi (3+)</option>
+                        <option value={4}>Önem Derecesi (4+)</option>
+                        <option value={5}>Önem Derecesi (5)</option>
+                      </Form.Select>
+                    </Col>
+                  </Row>
+                  <Form.Text className="text-muted">
+                    Bölüm, içerik tipi veya önem derecesine göre sonuçları filtreleyin.
+                  </Form.Text>
+                  {(filterChapter || filterContentType || minImportance > 1) && (
+                    <Button
+                      variant="outline-secondary"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => {
+                        setFilterChapter('');
+                        setFilterContentType('');
+                        setMinImportance(1);
+                      }}
+                    >
+                      <i className="bi bi-x-circle me-1"></i>
+                      Filtreleri Temizle
+                    </Button>
+                  )}
+                </Form.Group>
+
                 <Form.Group className="mb-3">
                   <Form.Check
                     type="checkbox"
@@ -503,6 +585,23 @@ function App() {
                     </span>
                   )}
                 </h5>
+
+                {/* NEW: Show active filters */}
+                {(filterChapter || filterContentType || minImportance > 1) && (
+                  <div className="mb-2">
+                    <small className="text-muted">
+                      Aktif Filtreler:
+                      {filterChapter && <Badge bg="info" className="ms-1">Bölüm: {filterChapter}</Badge>}
+                      {filterContentType && <Badge bg="success" className="ms-1">
+                        {filterContentType === 'heading' ? 'Başlık' :
+                         filterContentType === 'table' ? 'Tablo' :
+                         filterContentType === 'diagram' ? 'Diyagram' :
+                         filterContentType === 'list' ? 'Liste' : 'Metin'}
+                      </Badge>}
+                      {minImportance > 1 && <Badge bg="warning" className="ms-1">Önem: {minImportance}+</Badge>}
+                    </small>
+                  </div>
+                )}
                 
                 {results.total_pages > 1 && (
                   <div className="mt-3 d-flex justify-content-center">
@@ -522,6 +621,19 @@ function App() {
                       <Badge bg="secondary" className="me-2">Sayfa {answer.page}</Badge>
                       {answer.module && <Badge bg="info" className="me-2">{answer.module}</Badge>}
                       <Badge bg="light" text="dark">Benzerlik: {(answer.score * 100).toFixed(1)}%</Badge>
+                      {answer.content_type && (
+                        <Badge bg="success" className="me-2">
+                          {answer.content_type === 'heading' ? 'Başlık' :
+                           answer.content_type === 'table' ? 'Tablo' :
+                           answer.content_type === 'diagram' ? 'Diyagram' :
+                           answer.content_type === 'list' ? 'Liste' : 'Metin'}
+                        </Badge>
+                      )}
+                      {answer.importance && answer.importance >= 4 && (
+                        <Badge bg="warning" className="me-2">
+                          ⭐ Önemli ({answer.importance}/5)
+                        </Badge>
+                      )}
                     </div>
                   </div>
                   <Card.Text>{answer.text}</Card.Text>

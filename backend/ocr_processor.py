@@ -300,3 +300,4 @@ if __name__ == "__main__":
     else:
         print("OCR not available - tests skipped")
 
+

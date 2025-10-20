@@ -146,3 +146,6 @@ Thumbs.db
 # ChromaDB persistent storage
 backend/chroma_data/
 chroma_data/
+
+# Backup files
+backend/backups/

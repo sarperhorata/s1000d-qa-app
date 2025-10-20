@@ -333,3 +333,4 @@ if __name__ == "__main__":
     stats = store.get_collection_stats()
     print(f"\nCollection stats: {stats}")
 
+

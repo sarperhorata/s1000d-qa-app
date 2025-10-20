@@ -298,3 +298,4 @@ curl http://localhost:8000/index-status
 **Versiyon**: 2.0.0  
 **Son Güncelleme**: 17 Ekim 2025
 
+

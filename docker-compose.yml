@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: s1000d-qa-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persistent data
+      - ./backend/chroma_data:/app/backend/chroma_data
+      - ./backend/logs:/app/backend/logs
+      - ./backend/backups:/app/backend/backups
+      # PDF file (mount your PDF here)
+      - ./S1000D Issue 6/Specification/S1000D Issue 6.PDF:/app/data/S1000D_Issue_6.PDF:ro
+    environment:
+      - ENVIRONMENT=local
+      - DEBUG=false
+      - PDF_PATH=/app/data/S1000D_Issue_6.PDF
+      - VECTOR_STORE_TYPE=chromadb
+      - CHROMA_PERSIST_DIR=/app/backend/chroma_data
+      - OCR_ENABLED=true
+      - OCR_ENGINE=tesseract
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:3004,http://127.0.0.1:3000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - s1000d-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: s1000d-qa-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - s1000d-network
+
+networks:
+  s1000d-network:
+    driver: bridge
+
+volumes:
+  chroma_data:
+  logs:
+  backups:
+

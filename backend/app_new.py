@@ -23,9 +23,13 @@ from config import config
 from vector_store import get_vector_store
 from document_indexer import DocumentIndexer
 from pdf_processor import EnhancedPDFProcessor
+from logging_config import setup_logging, get_logger
 
 # Load environment variables
 load_dotenv()
+
+# Setup logging
+logger = setup_logging()
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute", "1000/hour"])
@@ -130,9 +134,15 @@ class IndexRequest(BaseModel):
 async def startup_event():
     """Initialize application on startup"""
     global indexer, index_status
-    
+
+    logger.info("Starting Enhanced S1000D QA API v2.0")
+    logger.info(f"Environment: {config.ENVIRONMENT}")
+    logger.info(f"Vector Store: {config.VECTOR_STORE_TYPE}")
+    logger.info(f"OCR Enabled: {config.OCR_ENABLED}")
+    logger.info(f"PDF Path: {config.PDF_PATH}")
+
     print("\n" + "="*60)
-    print("Starting Enhanced S1000D QA API")
+    print("Starting Enhanced S1000D QA API v2.0")
     print("="*60)
     print(f"Environment: {config.ENVIRONMENT}")
     print(f"Vector Store: {config.VECTOR_STORE_TYPE}")
@@ -239,14 +249,18 @@ async def reindex_documents(request: IndexRequest):
 @limiter.limit("50/minute")
 async def handle_query(request: QueryRequest):
     """Handle search query"""
+    logger = get_logger()
+
     if not indexer or not index_status["is_indexed"]:
+        logger.warning("Query attempted but index not available")
         raise HTTPException(
             status_code=503,
             detail="Index not available. Please run /reindex first"
         )
-    
+
     try:
         start_time = time.time()
+        logger.info(f"Processing query: '{request.query[:50]}...' (page: {request.page}, size: {request.page_size})")
         
         # Search
         results = indexer.search(

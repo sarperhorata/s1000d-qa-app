@@ -112,3 +112,4 @@ def get_config() -> Config:
 # Global config instance
 config = get_config()
 
+
